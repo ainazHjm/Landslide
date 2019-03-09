@@ -44,9 +44,10 @@ class FCNwPool(nn.Module):
     TODO: try the weighted network as well. instead of using the adaptive avg pooling,
     learn the weights of each output feature map. size = 3499x1999
     '''
-    def __init__(self, shape):
+    def __init__(self, shape, pixel_res=20):
         super(FCNwPool, self).__init__()
         self.shape = shape # CxHxW
+        self.pixel_res = pixel_res
         self.net = nn.Sequential(
             FCNBasicBlock(shape[0], 8, 16),
             nn.MaxPool2d(kernel_size=(4,4), stride=(4,4)),
@@ -72,7 +73,33 @@ class FCNwPool(nn.Module):
             nn.ConvTranspose2d(16, 1, kernel_size=(3,3), stride=(1,1)),
         )
         # self.avgpool = nn.AdaptiveAvgPool2d((self.shape[1], self.shape[2]))
-        self.last = nn.Conv2d(3, 1, kernel_size=(1,1), stride=(1,1))
+        # self.last = nn.Conv2d(3, 1, kernel_size=(1,1), stride=(1,1))
+        self.last = nn.Conv2d(15, 1, kernel_size=(1,1), stride=(1,1))
+
+    def pad_image(self, image, padding, padding_value=0):
+        (h, w) = image.shape
+        n_image = padding_value * th.ones(h+2*padding, w+2*padding)
+        n_image[padding:h+padding, padding:w+padding] = image
+        res = th.zeros(5, h, w)
+        for i in range(padding, h+padding):
+            for j in range(padding, w+padding):
+                res[:, i-padding, j-padding] = th.stack(
+                    n_image[i-padding, j],
+                    n_image[i, j+padding],
+                    n_image[i-padding, j],
+                    n_image[i, j-padding],
+                    n_image[i, j]
+                )
+        return res
+
+    def get_neighbors(self, features, pixel_res):
+        (b, c, h, w) = features.shape # c should be 3 because we have three different resolutions
+        n_features = (b, c*5, h, w)
+        for i in range(b):
+            n_features[i, 0:5, :, :] = self.pad_image(features[i, 0, :, :], 20//pixel_res + 1)
+            n_features[i, 5:10, :, :] = self.pad_image(features[i, 1, :, :], 160//pixel_res + 1)
+            n_features[i, 10:, :, :] = self.pad_image(features[i, 2, :, :], 640//pixel_res + 1)
+        return n_features
 
     def forward(self, x):
         out0 = self.net[0](x)
@@ -85,9 +112,7 @@ class FCNwPool(nn.Module):
                 self.res2(out2)
             )
         )
-        # trying weighted out instead of sum 
-        # th.sum(out,0)
-        # print(out.shape)
-        fx = self.last(out.view(-1, 3, self.shape[1], self.shape[2]))
-        # print(fx.shape)
+        # fx = self.last(out.view(-1, 3, shape[1], shape[2]))
+        fx = self.last(self.get_neighbors(out, self.pixel_res))
+        print(fx.shape)
         return fx
